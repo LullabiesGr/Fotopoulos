@@ -1,0 +1,11 @@
+@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* optional: μικρές πινελιές */
+html { scroll-behavior: smooth; }
+
+
+:root { --bg: 245 245 250; }
+body { background-color: rgb(var(--bg)); }
