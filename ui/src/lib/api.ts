@@ -1,179 +1,293 @@
-// src/lib/api.ts
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
-const API_KEY  = import.meta.env.VITE_API_KEY  || "devkey";
-
-// headers για /api/* (χρειάζεται x-api-key)
-function authHeaders(extra: Record<string, string> = {}) {
-  return { "x-api-key": API_KEY, ...extra };
-}
-
-async function getJSON<T>(url: string, withApiKey = false): Promise<T> {
-  const res = await fetch(url, { headers: withApiKey ? authHeaders() : {} });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-async function postJSON<T>(url: string, body: unknown, withApiKey = false): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: withApiKey
-      ? { ...authHeaders({ "Content-Type": "application/json" }) }
-      : { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-async function patchJSON<T>(url: string, body: unknown, withApiKey = false): Promise<T> {
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: withApiKey
-      ? { ...authHeaders({ "Content-Type": "application/json" }) }
-      : { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-async function putJSON<T>(url: string, body: unknown, withApiKey = false): Promise<T> {
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: withApiKey
-      ? { ...authHeaders({ "Content-Type": "application/json" }) }
-      : { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-/* -------- SCHEDULE / ORDERS -------- */
+import { supabase } from './supabase'
+import type { Client, Truck, Product, Order, OrderItem } from './supabase'
 
 export async function fetchSchedule(day: string, truckId?: number) {
-  const url = new URL(`${API_BASE}/schedule`);
-  url.searchParams.set("day", day);
-  if (truckId) url.searchParams.set("truck_id", String(truckId));
-  return getJSON<any[]>(url.toString());
+  let query = supabase
+    .from('orders')
+    .select(`
+      id,
+      delivery_date,
+      time_slot,
+      status,
+      notes,
+      client:clients(name, address),
+      truck:trucks(name)
+    `)
+    .eq('delivery_date', day)
+    .order('time_slot', { ascending: true })
+
+  if (truckId) {
+    query = query.eq('truck_id', truckId)
+  }
+
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+
+  return (data || []).map((order: any) => ({
+    id: order.id,
+    client: order.client?.name || 'Unknown',
+    address: order.client?.address || '',
+    truck: order.truck?.name || null,
+    time_slot: order.time_slot || '',
+    status: order.status,
+    notes: order.notes || ''
+  }))
 }
 
 export async function listTrucks() {
-  return getJSON<{ id:number; name:string }[]>(`${API_BASE}/trucks`);
+  const { data, error } = await supabase
+    .from('trucks')
+    .select('id, name')
+    .order('name')
+  if (error) throw new Error(error.message)
+  return data || []
 }
 
 export async function listClients() {
-  return getJSON<any[]>(`${API_BASE}/clients`);
+  const { data, error } = await supabase
+    .from('clients')
+    .select('*')
+    .order('name')
+  if (error) throw new Error(error.message)
+  return data || []
 }
 
-export async function createClient(payload: any) {
-  return postJSON<any>(`${API_BASE}/clients`, payload);
+export async function createClient(payload: Partial<Client>) {
+  const { data, error } = await supabase
+    .from('clients')
+    .insert([payload])
+    .select()
+    .single()
+  if (error) throw new Error(error.message)
+  return data
 }
 
 export async function listProducts() {
-  return getJSON<any[]>(`${API_BASE}/products`);
+  const { data, error } = await supabase
+    .from('products')
+    .select('*')
+    .order('name')
+  if (error) throw new Error(error.message)
+  return data || []
 }
 
-export async function createOrder(payload: any) {
-  return postJSON<any>(`${API_BASE}/orders`, payload);
+export async function createOrder(payload: Partial<Order>) {
+  const { data, error } = await supabase
+    .from('orders')
+    .insert([payload])
+    .select()
+    .single()
+  if (error) throw new Error(error.message)
+  return data
 }
 
 export async function getOrder(id: number) {
-  return getJSON<any>(`${API_BASE}/orders/${id}`);
+  const { data, error } = await supabase
+    .from('orders')
+    .select(`
+      *,
+      client:clients(*),
+      truck:trucks(*),
+      items:order_items(
+        id,
+        quantity,
+        price,
+        product:products(*)
+      )
+    `)
+    .eq('id', id)
+    .maybeSingle()
+  if (error) throw new Error(error.message)
+  return data
 }
 
-export async function updateOrder(id: number, payload: any) {
-  return patchJSON<any>(`${API_BASE}/orders/${id}`, payload);
+export async function updateOrder(id: number, payload: Partial<Order>) {
+  const { data, error } = await supabase
+    .from('orders')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw new Error(error.message)
+  return data
 }
 
-// ✨ ΝΕΟ: αυτό ζητά το EditOrderModal
 export async function updateOrderStatus(id: number, status: string) {
-  return patchJSON<any>(`${API_BASE}/orders/${id}`, { status });
+  return updateOrder(id, { status })
 }
 
-export async function replaceOrderItems(id: number, payload: any) {
-  return putJSON<any>(`${API_BASE}/orders/${id}/items`, payload);
-}
+export async function replaceOrderItems(id: number, items: { product_id: string; quantity: number; price: number }[]) {
+  await supabase.from('order_items').delete().eq('order_id', id)
 
-/* -------- PRINT / QUOTES -------- */
+  const itemsToInsert = items.map(item => ({
+    order_id: id,
+    product_id: item.product_id,
+    quantity: item.quantity,
+    price: item.price
+  }))
+
+  const { data, error } = await supabase
+    .from('order_items')
+    .insert(itemsToInsert)
+    .select()
+  if (error) throw new Error(error.message)
+  return data
+}
 
 export function openOrderQuotePdf(id: number) {
-  window.open(`${API_BASE}/quotes/${id}/pdf`, "_blank");
+  alert('PDF generation not implemented yet')
 }
 
 export async function sendQuoteEmail(
   orderId: number,
   payload: {to: string[]; cc?: string[]; subject?: string; body?: string;}
 ) {
-  return postJSON<any>(`${API_BASE}/api/quotes/${orderId}/send`, payload, true);
+  alert('Email functionality not implemented yet')
 }
 
 export function exportScheduleCsv(day: string, truckId?: number) {
-  const url = new URL(`${API_BASE}/api/export/schedule.csv`);
-  url.searchParams.set("day", day);
-  if (truckId) url.searchParams.set("truck_id", String(truckId));
-  window.open(url.toString() + `&x-api-key=${encodeURIComponent(API_KEY)}`, "_blank");
+  alert('CSV export not implemented yet')
 }
 
 export function exportSchedulePdf(day: string, truckId?: number) {
-  const url = new URL(`${API_BASE}/api/export/schedule.pdf`);
-  url.searchParams.set("day", day);
-  if (truckId) url.searchParams.set("truck_id", String(truckId));
-  window.open(url.toString() + `&x-api-key=${encodeURIComponent(API_KEY)}`, "_blank");
+  alert('PDF export not implemented yet')
 }
 
-/* -------- FINANCE -------- */
-
 export async function financeSummary(start: string, end: string) {
-  const url = new URL(`${API_BASE}/api/finance/summary`);
-  url.searchParams.set("start", start);
-  url.searchParams.set("end", end);
-  return getJSON<any>(url.toString(), true);
+  const { data: orders } = await supabase
+    .from('orders')
+    .select('*, items:order_items(quantity, price)')
+    .gte('delivery_date', start)
+    .lte('delivery_date', end)
+    .eq('status', 'completed')
+
+  const { data: expenses } = await supabase
+    .from('expenses')
+    .select('amount')
+    .gte('date', start)
+    .lte('date', end)
+
+  const revenue = (orders || []).reduce((sum, order) => {
+    const orderTotal = (order.items || []).reduce((s: number, item: any) => s + (item.quantity * item.price), 0)
+    return sum + orderTotal
+  }, 0)
+
+  const totalExpenses = (expenses || []).reduce((sum, exp) => sum + exp.amount, 0)
+
+  return {
+    revenue,
+    expenses: totalExpenses,
+    profit: revenue - totalExpenses
+  }
 }
 
 export async function financeOrders(start: string, end: string) {
-  const url = new URL(`${API_BASE}/api/finance/orders`);
-  url.searchParams.set("start", start);
-  url.searchParams.set("end", end);
-  return getJSON<any[]>(url.toString(), true);
+  const { data, error } = await supabase
+    .from('orders')
+    .select(`
+      id,
+      delivery_date,
+      status,
+      client:clients(name),
+      items:order_items(quantity, price)
+    `)
+    .gte('delivery_date', start)
+    .lte('delivery_date', end)
+    .order('delivery_date', { ascending: false })
+
+  if (error) throw new Error(error.message)
+
+  return (data || []).map(order => ({
+    id: order.id,
+    date: order.delivery_date,
+    client: order.client?.name || 'Unknown',
+    status: order.status,
+    total: (order.items || []).reduce((sum: number, item: any) => sum + (item.quantity * item.price), 0)
+  }))
 }
 
 export async function listExpenses(start?: string, end?: string) {
-  const url = new URL(`${API_BASE}/api/finance/expenses`);
-  if (start) url.searchParams.set("start", start);
-  if (end) url.searchParams.set("end", end);
-  return getJSON<any[]>(url.toString(), true);
+  let query = supabase
+    .from('expenses')
+    .select('*')
+    .order('date', { ascending: false })
+
+  if (start) query = query.gte('date', start)
+  if (end) query = query.lte('date', end)
+
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+  return data || []
 }
 
 export async function createExpense(payload: {
   date: string; category: string; vendor: string; description: string; amount: number;
 }) {
-  return postJSON<any>(`${API_BASE}/api/finance/expenses`, payload, true);
+  const { data, error } = await supabase
+    .from('expenses')
+    .insert([payload])
+    .select()
+    .single()
+  if (error) throw new Error(error.message)
+  return data
 }
 
 export async function uploadInvoice(form: FormData) {
-  const res = await fetch(`${API_BASE}/api/finance/invoices/upload`, {
-    method: "POST",
-    headers: authHeaders(), // ΜΗΝ βάλεις Content-Type εδώ
-    body: form,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  alert('Invoice upload not implemented yet')
+  return { message: 'Not implemented' }
 }
 
 export async function listInvoices(start?: string, end?: string) {
-  const url = new URL(`${API_BASE}/api/finance/invoices`);
-  if (start) url.searchParams.set("start", start);
-  if (end) url.searchParams.set("end", end);
-  return getJSON<any[]>(url.toString(), true);
+  let query = supabase
+    .from('invoices')
+    .select('*')
+    .order('date', { ascending: false })
+
+  if (start) query = query.gte('date', start)
+  if (end) query = query.lte('date', end)
+
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+  return data || []
 }
 
-
-// Weekly schedule
 export async function fetchWeek(start: string, truckId?: number) {
-  const url = new URL(`${API_BASE}/schedule/week`);
-  url.searchParams.set("start", start); // ISO YYYY-MM-DD
-  if (truckId) url.searchParams.set("truck_id", String(truckId));
-  return getJSON<any[]>(url.toString());
+  const endDate = new Date(start)
+  endDate.setDate(endDate.getDate() + 6)
+  const end = endDate.toISOString().slice(0, 10)
+
+  let query = supabase
+    .from('orders')
+    .select(`
+      id,
+      delivery_date,
+      time_slot,
+      status,
+      notes,
+      client:clients(name, address),
+      truck:trucks(name)
+    `)
+    .gte('delivery_date', start)
+    .lte('delivery_date', end)
+    .order('delivery_date')
+    .order('time_slot')
+
+  if (truckId) {
+    query = query.eq('truck_id', truckId)
+  }
+
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+
+  return (data || []).map((order: any) => ({
+    id: order.id,
+    date: order.delivery_date,
+    client: order.client?.name || 'Unknown',
+    address: order.client?.address || '',
+    truck: order.truck?.name || null,
+    time_slot: order.time_slot || '',
+    status: order.status,
+    notes: order.notes || ''
+  }))
 }
 

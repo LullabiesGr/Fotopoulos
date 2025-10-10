@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@hello-pangea/dnd": "^18.0.1",
+    "@supabase/supabase-js": "^2.75.0",
     "framer-motion": "^12.23.22",
     "lucide-react": "^0.545.0",
     "react": "^18.3.1",
